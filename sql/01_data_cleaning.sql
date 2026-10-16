@@ -11,7 +11,7 @@ Input:   layoffs         (raw data, never modified)
 Output:  layoffs_clean
 
 Dialect: MySQL 8.0+
-Author:  [Your name]
+Author:  Melvin Salim
 ==========================================================
 */
 
