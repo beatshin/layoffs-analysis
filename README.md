@@ -1,203 +1,147 @@
-# Data Analytics Portfolio
+# Layoffs Data Cleaning in MySQL
 
-## Project Overview
+A data cleaning project on a tech layoffs dataset (2,361 records, March 2020 to March 2023). The raw data is cleaned in SQL using a staging workflow, and every decision is documented and validated.
 
-This project analyzes social media engagement patterns to identify the optimal posting times for TikTok and LinkedIn.
-
-The purpose of this analysis is to understand when users are most active on each platform and compare differences in audience behavior between an entertainment-focused platform (TikTok) and a professional networking platform (LinkedIn).
-
-This project applies a **descriptive analytics** approach to summarize engagement trends and provide insights that can support social media content scheduling decisions.
+**Dialect:** MySQL 8.0 | **Tools:** MySQL Server, MySQL Workbench | **Output table:** `layoffs_clean`
 
 ---
 
-# Business Understanding
+## Dataset
 
-## Project Goal
+One row per layoff event, with 9 columns: `company`, `location`, `industry`, `total_laid_off`, `percentage_laid_off`, `date`, `stage`, `country`, `funds_raised_millions`. See [data/README.md](data/README.md) for the source and loading steps.
 
-The goal of this project is to determine the best times to post content on TikTok and LinkedIn by analyzing audience engagement patterns.
+## Cleaning workflow
 
-By identifying peak engagement hours, this project aims to help content creators, marketers, and businesses make more informed decisions when scheduling social media content to improve reach and engagement.
+```mermaid
+flowchart LR
+    A[layoffs<br/>raw, never modified] --> B[layoffs_staging<br/>working copy]
+    B --> C[layoffs_clean<br/>deduplicate, standardize,<br/>fix types, remove unusable rows]
+    C --> D[Validated<br/>final table]
+```
 
-## Project Purpose
-
-Different social media platforms have different user behaviors. TikTok users may have higher activity during entertainment and leisure periods, while LinkedIn users may engage more during professional working hours.
-
-This project aims to compare these differences and understand how posting time influences engagement opportunities across both platforms.
-
-## Challenges
-
-One of the main challenges in this project is the limited availability of public user activity data from TikTok and LinkedIn.
-
-Both platforms do not publicly release detailed information about when their users are most active. Because of this limitation, direct platform-level engagement data is difficult to access.
-
-Therefore, this analysis relies on publicly available social media engagement studies and reports as a proxy for understanding general audience activity patterns.
-
----
-
-# Data Understanding
-
-## Data Elements
-
-The analysis focuses on the following data elements:
-
-| Data Element | Description |
+| Step | What it does |
 |---|---|
-| Platform Identifier | The social media platform being analyzed (TikTok or LinkedIn) |
-| Day of Week | The day when engagement activity occurs |
-| Activity Time | The hour when users show the highest engagement |
-| Time Zone | The location standard used for analysis (Asia/Jakarta / WIB) |
-| Engagement Metric | User interactions such as likes, comments, shares, impressions, and clicks |
+| 1. Staging | Copies the raw table so the original is preserved |
+| 2. Find duplicates | `ROW_NUMBER()` over every column flags repeated rows |
+| 3. Validate duplicates | Reviews flagged rows manually before deleting anything |
+| 4. Remove duplicates | Keeps the first occurrence of each event |
+| 5. Standardize | Trims spaces, merges spelling variants, fixes country names |
+| 6. Missing values | Converts blanks to NULL and fills gaps only where the data supports it |
+| 7. Data types | Converts dates and percentages from text to real types |
+| 8. Unusable rows | Removes rows with no layoff numbers |
+| 9. Validate | Re-checks duplicates, spaces, NULLs, ranges and row counts |
 
-The purpose of these data elements is to identify patterns in user engagement and compare activity trends between TikTok and LinkedIn.
+## Cleaning log
 
----
+| Issue found | Count | Action |
+|---|---|---|
+| Exact duplicate rows (Casper, Cazoo, Hibob, Wildlife Studios, Yahoo) | 5 | Removed, first occurrence kept |
+| Company names with leading or trailing spaces (e.g. `WeWork `) | 11 | Trimmed |
+| Industry spelled three ways: `Crypto`, `Crypto Currency`, `CryptoCurrency` | 3 rows | Merged into `Crypto` |
+| Country written as `United States.` (trailing period) | 4 | Fixed to `United States` |
+| Blank industry values | 3 | Converted to NULL |
+| Missing industry (4 rows) | 4 | 3 filled from the same company's other rows (Airbnb, Carvana, Juul); 1 left NULL (Bally's Interactive) |
+| `date` stored as text (`3/6/2023`) | all rows | Converted to `DATE` |
+| `percentage_laid_off` stored as text | all rows | Converted to `DECIMAL(5,4)` |
+| `funds_raised_millions` would be rounded by an `INT` column (45 rows have decimals) | 45 | Stored as `DECIMAL(10,2)` |
+| Rows with neither a headcount nor a percentage | 361 | Removed from `layoffs_clean` |
 
-# Data Sources
+**Row count:** 2,361 raw rows, 2,356 after removing duplicates, 1,995 in the final table.
 
-Due to the lack of publicly available user activity data directly from TikTok and LinkedIn, this project uses publicly available social media engagement research and reports.
+## Before and after
 
-The selected data sources were chosen because they provide engagement analysis based on large-scale social media activity and are considered reliable sources within the social media analytics industry.
+| Metric | Before | After |
+|---|---|---|
+| Rows | 2,361 | 1,995 |
+| Exact duplicate rows | 5 | 0 |
+| Company names with extra spaces | 11 | 0 |
+| Distinct industry values | 32 | 30 |
+| Blank industry, stage, percentage or date values | 3 | 0 |
+| Rows with no headcount and no percentage | 362 | 0 |
+| `date` type | text | date |
+| `percentage_laid_off` type | text | decimal(5,4) |
+| `funds_raised_millions` type | double | decimal(10,2) |
 
-## Sources Used
+Full output: [results/validation_output.txt](results/validation_output.txt).
 
-### Sprout Social
-https://sproutsocial.com/insights/best-times-to-post-on-social-media/
+## Featured queries
 
-Sprout Social provides analysis of social media engagement patterns based on millions of interactions across different platforms.
+### Remove duplicates with `ROW_NUMBER()`
 
-### RADAAR
-https://www.radaar.io/free-tools/best-times-to-post/asia-jakarta/jakarta/
+```sql
+INSERT INTO layoffs_clean
+SELECT *,
+    ROW_NUMBER() OVER(
+        PARTITION BY
+            company,
+            location,
+            industry,
+            total_laid_off,
+            percentage_laid_off,
+            `date`,
+            stage,
+            country,
+            funds_raised_millions
+    ) AS row_num
+FROM layoffs_staging;
+```
 
-RADAAR provides location-based recommendations for optimal posting times, including audience behavior trends for Jakarta, Indonesia.
+Rows with `row_num > 1` are exact repeats and are deleted in the next statement.
 
----
+### Fill missing industries from the same company
 
-# Future Improvements
+```sql
+UPDATE layoffs_clean t1
+JOIN layoffs_clean t2
+  ON t1.company = t2.company
+ AND t1.location = t2.location
+SET t1.industry = t2.industry
+WHERE t1.industry IS NULL
+  AND t2.industry IS NOT NULL;
+```
 
-A potential improvement for this project would be incorporating first-party performance data from specific TikTok and LinkedIn pages.
+A self-join copies the industry from another row of the same company and location. Only 3 of the 4 gaps could be filled this way.
 
-Accessing page-level analytics would allow for a more personalized analysis based on actual audience behavior, including:
+## Decisions and trade-offs
 
-- Follower activity patterns
-- Post performance
-- Engagement rate
-- Reach and impressions
-- Content type performance
-- Audience demographics
+| Decision | Reason |
+|---|---|
+| Keep the raw table untouched and clean in a copy | Keeps a way back to the original data |
+| Do not merge `Fin-Tech` (3 rows) into `Finance` (284 rows) | They may be different categories; merging would be a guess |
+| Keep the three Oda rows | Same date and headcount (70) but different percentage and funding; nothing says which is correct, so none is deleted |
+| Leave remaining NULLs as NULL instead of imputing | Layoff numbers and funding cannot be estimated reliably from other rows |
+| Keep `Unknown` stage separate from NULL stage | `Unknown` is a value in the source; NULL means missing |
+| Remove rows with no headcount and no percentage | They cannot contribute to any layoff analysis |
 
-This would provide more accurate recommendations based on a specific brand or creator's audience rather than general platform trends.
+**Impact of removing unusable rows:** these 361 rows are 15.3% of the data. They include the only record for 8 countries (Greece, Belgium, Ghana, Peru, Bahrain, Uruguay, South Africa, Czech Republic), and the number of distinct companies drops from 1,885 to 1,628. If you need those entities (for example to count companies with any recorded layoff), keep the rows and filter them out at analysis time instead.
 
----
+## Validation
 
-# Analytical Approach
+[Step 9 of the cleaning script](sql/01_data_cleaning.sql) checks the final table:
+- Row counts reconcile (2,361 raw, 2,361 staging, 1,995 clean)
+- No exact duplicates remain
+- No extra spaces remain in any text column
+- Dates run from 2020-03-11 to 2023-03-06, percentages from 0 to 1, headcounts from 3 to 12,000
+- Decimal funding values survived (for example 214.50 and 3.80)
 
-This project follows a **descriptive analytics** approach to identify patterns and summarize historical engagement trends.
+## Known issues
 
-The analysis process includes:
+- The three Oda rows are a likely duplicate event that cannot be resolved from the data.
+- Remaining NULLs: 378 in `total_laid_off`, 423 in `percentage_laid_off`, 165 in `funds_raised_millions`, 5 in `stage`, 1 in `industry`, 1 in `date`.
+- `percentage_laid_off` is the percentage of the workforce, but the data has no company headcount, so one cannot be derived from the other.
 
-## 1. Data Collection
+## How to reproduce
 
-- Gather publicly available social media engagement timing data from selected sources.
-- Collect information regarding peak engagement hours for TikTok and LinkedIn.
+1. Install MySQL 8.0 or later.
+2. Put `layoffs.csv` in `data/` and edit the path in `sql/00_create_table_and_load.sql` (see [data/README.md](data/README.md)).
+3. Run the scripts in order:
 
-## 2. Data Preparation
+| File | Purpose |
+|---|---|
+| `sql/00_create_table_and_load.sql` | Creates the `layoffs_project` database and loads the raw data |
+| `sql/01_data_cleaning.sql` | The full cleaning process, Steps 1 to 9 |
+| `sql/02_before_after_summary.sql` | Compares the raw and clean tables |
 
-- Organize engagement data by platform, day, and time.
-- Standardize time zones to Asia/Jakarta (WIB).
-- Prepare data for comparison and visualization.
+## Skills demonstrated
 
-## 3. Data Analysis
-
-- Compare engagement patterns between TikTok and LinkedIn.
-- Identify peak activity hours.
-- Analyze differences between weekday and weekend engagement trends.
-
-## 4. Data Visualization
-
-- Create visual reports and dashboards to communicate engagement trends.
-- Present comparisons between platforms to highlight differences in audience behavior.
-
----
-
-# Technologies Used
-
-## Microsoft Excel
-
-Used for:
-
-- Data organization
-- Data cleaning
-- Data preparation
-- Initial analysis
-- Creating basic visualizations
-
-## Microsoft Power BI
-
-Used for:
-
-- Data visualization
-- Dashboard creation
-- Presenting engagement trends
-- Creating interactive reports
-
-## GitHub
-
-Used for:
-
-- Project documentation
-- Portfolio management
-- Sharing analytical work
-
----
-
-# Key Questions
-
-This project aims to answer:
-
-1. What are the peak engagement hours on TikTok?
-2. What are the peak engagement hours on LinkedIn?
-3. How do user activity patterns differ between TikTok and LinkedIn?
-4. Are there differences between weekday and weekend engagement?
-5. When should content be posted to maximize engagement opportunities?
-
----
-
-# Key Findings
-
-*(To be completed after analysis)*
-
-Examples:
-
-- TikTok shows higher engagement during evening hours.
-- LinkedIn engagement is stronger during professional working hours.
-- Audience activity patterns differ significantly between entertainment and professional platforms.
-
----
-
-# Recommendations
-
-*(To be completed after analysis)*
-
-Examples:
-
-- Schedule TikTok content during peak leisure hours.
-- Publish LinkedIn content during business hours when professionals are more active.
-- Test posting schedules continuously using actual page analytics.
-
----
-
-# Credits & References
-
-## Data Sources
-
-- Sprout Social - Best Times to Post on Social Media  
-https://sproutsocial.com/insights/best-times-to-post-on-social-media/
-
-- RADAAR - Best Times to Post (Jakarta)  
-https://www.radaar.io/free-tools/best-times-to-post/asia-jakarta/jakarta/
-
-## Tools
-
-- Microsoft Excel
-- Microsoft Power BI
-- GitHub
+Data cleaning workflow (staging, validation, documentation), window functions (`ROW_NUMBER`), CTEs, self-joins, `TRIM` and `STR_TO_DATE`, data type conversion, handling NULLs and placeholders, row-count reconciliation, and documenting judgment calls.
